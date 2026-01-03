@@ -123,6 +123,7 @@ impl Decoder {
                             protocol::op::BINARY_FRAME => WebsocketFrame::Binary(self.fin, payload),
                             protocol::op::CONTINUATION_FRAME => WebsocketFrame::Continuation(self.fin, payload),
                             protocol::op::PING => WebsocketFrame::Ping(payload),
+                            protocol::op::PONG => WebsocketFrame::Pong(payload),
                             protocol::op::CONNECTION_CLOSE => WebsocketFrame::Close(payload),
                             _ => return Err(Error::Protocol("unknown op_code")),
                         };
