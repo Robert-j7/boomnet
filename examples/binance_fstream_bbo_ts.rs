@@ -31,13 +31,26 @@ fn main() -> anyhow::Result<()> {
     loop {
         let batch = ws.read_batch_ts()?;
         let rx = batch.rx_timestamps().unwrap_or_default();
+        let read_ns = clock_realtime_ns();
         for frame in batch.iter() {
             if let WebsocketFrame::Text(_fin, body) = frame? {
+                let ready_ns = clock_realtime_ns();
+                let nic_to_kernel_ns = if rx.hw_sys_ns != 0 && read_ns != 0 {
+                    read_ns.saturating_sub(rx.hw_sys_ns)
+                } else {
+                    0
+                };
+                let tls_to_userspace_ns = if ready_ns != 0 && read_ns != 0 {
+                    ready_ns.saturating_sub(read_ns)
+                } else {
+                    0
+                };
                 println!(
-                    "hw_raw_ns={} hw_sys_ns={} sw_ns={} msg={}",
+                    "hw_raw_ns={} hw_sys_ns={} nic_to_kernel_ns={} tls_to_userspace_ns={} msg={}",
                     rx.hw_raw_ns,
                     rx.hw_sys_ns,
-                    rx.sw_ns,
+                    nic_to_kernel_ns,
+                    tls_to_userspace_ns,
                     String::from_utf8_lossy(body)
                 );
             }
@@ -53,4 +66,20 @@ fn main() -> anyhow::Result<()> {
 )))]
 fn main() {
     eprintln!("This example requires Linux and features: ws, timestamping, and rustls-* or openssl.");
+}
+
+#[cfg(all(
+    target_os = "linux",
+    feature = "timestamping",
+    feature = "ws",
+    any(feature = "rustls", feature = "openssl")
+))]
+fn clock_realtime_ns() -> u64 {
+    unsafe {
+        let mut ts: libc::timespec = std::mem::zeroed();
+        if libc::clock_gettime(libc::CLOCK_REALTIME, &mut ts) != 0 {
+            return 0;
+        }
+        (ts.tv_sec as u64) * 1_000_000_000 + (ts.tv_nsec as u64)
+    }
 }
