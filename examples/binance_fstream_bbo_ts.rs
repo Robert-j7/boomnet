@@ -6,13 +6,20 @@
 ))]
 fn main() -> anyhow::Result<()> {
     use boomnet::stream::ConnectionInfo;
-    use boomnet::stream::timestamping::{enable_rx_timestamping, TimestampingStream};
+    use boomnet::stream::timestamping::{configure_hwtstamp, enable_rx_timestamping, TimestampingStream};
     use boomnet::stream::tls::IntoTlsStream;
     use boomnet::ws::{IntoWebsocket, WebsocketFrame};
     use std::os::fd::AsRawFd;
 
     let host = "fstream.binance.com";
+    let iface = std::env::args().nth(1);
     let stream = ConnectionInfo::new(host, 443).into_tcp_stream()?;
+
+    if let Some(iface) = iface.as_deref() {
+        if let Err(err) = configure_hwtstamp(stream.as_raw_fd(), iface) {
+            eprintln!("warn: ioctl(SIOCSHWTSTAMP) failed for {iface}: {err}");
+        }
+    }
 
     enable_rx_timestamping(stream.as_raw_fd())?;
     let stream = TimestampingStream::new(stream);

@@ -22,10 +22,23 @@ const SOF_TIMESTAMPING_RAW_HARDWARE: libc::c_int = 1 << 6;
 
 const SCM_TIMESTAMPING: libc::c_int = libc::SO_TIMESTAMPING;
 
+// ---- driver HW timestamping (legacy ioctl) ----
+const SIOCSHWTSTAMP: libc::c_ulong = 0x89b0;
+const HWTSTAMP_TX_OFF: libc::c_int = 0;
+const HWTSTAMP_FILTER_ALL: libc::c_int = 1;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct ScmTimestamping {
     ts: [libc::timespec; 3],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct HwtstampConfig {
+    flags: libc::c_int,
+    tx_type: libc::c_int,
+    rx_filter: libc::c_int,
 }
 
 #[repr(align(8))]
@@ -111,6 +124,33 @@ pub fn enable_rx_timestamping(fd: RawFd) -> io::Result<()> {
     } else {
         Ok(())
     }
+}
+
+/// Try to enable hardware RX timestamping at the driver level for a given interface.
+pub fn configure_hwtstamp(fd: RawFd, iface: &str) -> io::Result<()> {
+    if iface.is_empty() || iface.len() >= libc::IFNAMSIZ {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "bad iface name"));
+    }
+
+    let mut cfg = HwtstampConfig {
+        flags: 0,
+        tx_type: HWTSTAMP_TX_OFF,
+        rx_filter: HWTSTAMP_FILTER_ALL,
+    };
+
+    // SAFETY: libc::ifreq has the correct layout for ioctl(SIOCSHWTSTAMP).
+    let mut ifr: libc::ifreq = unsafe { mem::zeroed() };
+    for (i, b) in iface.as_bytes().iter().enumerate() {
+        ifr.ifr_name[i] = *b as libc::c_char;
+    }
+    unsafe {
+        ifr.ifr_ifru.ifru_data = (&mut cfg as *mut HwtstampConfig).cast::<libc::c_char>();
+        let rc = libc::ioctl(fd, SIOCSHWTSTAMP, &mut ifr);
+        if rc < 0 {
+            return Err(last_err());
+        }
+    }
+    Ok(())
 }
 
 /// Wraps any stream and captures SCM_TIMESTAMPING on reads via recvmsg().
