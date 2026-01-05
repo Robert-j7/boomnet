@@ -1,7 +1,7 @@
 //! Provides TLS stream implementation for different backends.
 
 use crate::service::select::Selectable;
-use crate::stream::{ConnectionInfo, ConnectionInfoProvider};
+use crate::stream::{ConnectionInfo, ConnectionInfoProvider, RxTimestamped};
 #[cfg(feature = "openssl")]
 pub use __openssl::TlsStream;
 #[cfg(all(feature = "rustls", not(feature = "openssl")))]
@@ -136,7 +136,7 @@ impl TlsConfigExt for TlsConfig {
 mod __rustls {
     use crate::service::select::Selectable;
     use crate::stream::tls::TlsConfig;
-    use crate::stream::{ConnectionInfo, ConnectionInfoProvider};
+    use crate::stream::{ConnectionInfo, ConnectionInfoProvider, RxTimestamped};
     use crate::util::NoBlock;
     #[cfg(feature = "mio")]
     use mio::{Interest, Registry, Token, event::Source};
@@ -269,6 +269,16 @@ mod __rustls {
         }
     }
 
+    impl<S: RxTimestamped> RxTimestamped for TlsStream<S> {
+        fn last_rx_timestamps(&self) -> Option<crate::stream::RxTimestamps> {
+            self.inner.last_rx_timestamps()
+        }
+
+        fn take_last_rx_timestamps(&mut self) -> Option<crate::stream::RxTimestamps> {
+            self.inner.take_last_rx_timestamps()
+        }
+    }
+
     #[derive(Debug)]
     pub(crate) struct NoCertVerification;
 
@@ -326,7 +336,7 @@ mod __rustls {
 mod __openssl {
     use crate::service::select::Selectable;
     use crate::stream::tls::TlsConfig;
-    use crate::stream::{ConnectionInfo, ConnectionInfoProvider};
+    use crate::stream::{ConnectionInfo, ConnectionInfoProvider, RxTimestamped};
     #[cfg(feature = "mio")]
     use mio::{Interest, Registry, Token, event::Source};
     use openssl::ssl::{
@@ -396,6 +406,32 @@ mod __openssl {
                 State::Handshake(stream_and_buf) => stream_and_buf.as_ref().unwrap().0.get_ref().connection_info(),
                 State::Drain(stream_and_buf) => stream_and_buf.as_ref().unwrap().0.get_ref().connection_info(),
                 State::Stream(stream) => stream.get_ref().connection_info(),
+            }
+        }
+    }
+
+    impl<S: RxTimestamped> RxTimestamped for TlsStream<S> {
+        fn last_rx_timestamps(&self) -> Option<crate::stream::RxTimestamps> {
+            match &self.state {
+                State::Handshake(stream_and_buf) => stream_and_buf
+                    .as_ref()
+                    .and_then(|(stream, _)| stream.get_ref().last_rx_timestamps()),
+                State::Drain(stream_and_buf) => stream_and_buf
+                    .as_ref()
+                    .and_then(|(stream, ..)| stream.get_ref().last_rx_timestamps()),
+                State::Stream(stream) => stream.get_ref().last_rx_timestamps(),
+            }
+        }
+
+        fn take_last_rx_timestamps(&mut self) -> Option<crate::stream::RxTimestamps> {
+            match &mut self.state {
+                State::Handshake(stream_and_buf) => stream_and_buf
+                    .as_mut()
+                    .and_then(|(stream, _)| stream.get_mut().take_last_rx_timestamps()),
+                State::Drain(stream_and_buf) => stream_and_buf
+                    .as_mut()
+                    .and_then(|(stream, ..)| stream.get_mut().take_last_rx_timestamps()),
+                State::Stream(stream) => stream.get_mut().take_last_rx_timestamps(),
             }
         }
     }
@@ -683,6 +719,22 @@ impl<S: Selectable> Selectable for TlsReadyStream<S> {
         match self {
             TlsReadyStream::Plain(stream) => stream.make_readable(),
             TlsReadyStream::Tls(stream) => stream.make_readable(),
+        }
+    }
+}
+
+impl<S: RxTimestamped> RxTimestamped for TlsReadyStream<S> {
+    fn last_rx_timestamps(&self) -> Option<crate::stream::RxTimestamps> {
+        match self {
+            TlsReadyStream::Plain(stream) => stream.last_rx_timestamps(),
+            TlsReadyStream::Tls(stream) => stream.last_rx_timestamps(),
+        }
+    }
+
+    fn take_last_rx_timestamps(&mut self) -> Option<crate::stream::RxTimestamps> {
+        match self {
+            TlsReadyStream::Plain(stream) => stream.take_last_rx_timestamps(),
+            TlsReadyStream::Tls(stream) => stream.take_last_rx_timestamps(),
         }
     }
 }

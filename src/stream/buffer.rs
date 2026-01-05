@@ -1,7 +1,7 @@
 //! Stream that is buffering data written to it.
 
 use crate::service::select::Selectable;
-use crate::stream::{ConnectionInfo, ConnectionInfoProvider};
+use crate::stream::{ConnectionInfo, ConnectionInfoProvider, RxTimestamped, RxTimestamps};
 #[cfg(feature = "mio")]
 use mio::{Interest, Registry, Token, event::Source};
 use std::io;
@@ -86,6 +86,16 @@ impl<S: Write, const N: usize> Write for BufferedStream<S, N> {
 impl<S: ConnectionInfoProvider, const N: usize> ConnectionInfoProvider for BufferedStream<S, N> {
     fn connection_info(&self) -> &ConnectionInfo {
         self.inner.connection_info()
+    }
+}
+
+impl<S: RxTimestamped, const N: usize> RxTimestamped for BufferedStream<S, N> {
+    fn last_rx_timestamps(&self) -> Option<RxTimestamps> {
+        self.inner.last_rx_timestamps()
+    }
+
+    fn take_last_rx_timestamps(&mut self) -> Option<RxTimestamps> {
+        self.inner.take_last_rx_timestamps()
     }
 }
 

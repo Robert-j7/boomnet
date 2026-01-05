@@ -59,7 +59,7 @@ use crate::service::select::Selectable;
 use crate::stream::tcp::TcpStream;
 #[cfg(any(feature = "rustls", feature = "openssl"))]
 use crate::stream::tls::{IntoTlsStream, TlsReadyStream, TlsStream};
-use crate::stream::{BindAndConnect, ConnectionInfoProvider};
+use crate::stream::{BindAndConnect, ConnectionInfoProvider, RxTimestamped, RxTimestamps};
 use crate::util::NoBlock;
 use crate::ws::Error::{Closed, ReceivedCloseFrame};
 use crate::ws::decoder::Decoder;
@@ -192,6 +192,26 @@ impl<S: Read + Write> Websocket<S> {
     pub fn read_batch(&mut self) -> Result<Batch<'_, S>, Error> {
         match self.state.read(&mut self.stream).no_block() {
             Ok(()) => Ok(Batch { websocket: self }),
+            Err(err) => {
+                self.closed = true;
+                Err(err)?
+            }
+        }
+    }
+
+    #[inline]
+    pub fn read_batch_ts(&mut self) -> Result<BatchTs<'_, S>, Error>
+    where
+        S: RxTimestamped,
+    {
+        match self.state.read(&mut self.stream).no_block() {
+            Ok(()) => {
+                let rx = self.stream.take_last_rx_timestamps();
+                Ok(BatchTs {
+                    batch: Batch { websocket: self },
+                    rx,
+                })
+            }
             Err(err) => {
                 self.closed = true;
                 Err(err)?
@@ -365,12 +385,43 @@ pub struct Batch<'a, S> {
     websocket: &'a mut Websocket<S>,
 }
 
+/// Represents a batch of 0 to N websocket frames since the last network read, with RX timestamps.
+pub struct BatchTs<'a, S> {
+    batch: Batch<'a, S>,
+    rx: Option<RxTimestamps>,
+}
+
+impl<'a, S> BatchTs<'a, S> {
+    pub fn rx_timestamps(&self) -> Option<RxTimestamps> {
+        self.rx
+    }
+}
+
+impl<'a, S: Read + Write> BatchTs<'a, S> {
+    pub fn iter(self) -> BatchIter<'a, S> {
+        self.batch.into_iter()
+    }
+
+    pub fn receive_next(&mut self) -> Option<Result<WebsocketFrame, Error>> {
+        self.batch.receive_next()
+    }
+}
+
 impl<'a, S: Read + Write> IntoIterator for Batch<'a, S> {
     type Item = Result<WebsocketFrame, Error>;
     type IntoIter = BatchIter<'a, S>;
 
     fn into_iter(self) -> Self::IntoIter {
         BatchIter { batch: self }
+    }
+}
+
+impl<'a, S: Read + Write> IntoIterator for BatchTs<'a, S> {
+    type Item = Result<WebsocketFrame, Error>;
+    type IntoIter = BatchIter<'a, S>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.batch.into_iter()
     }
 }
 

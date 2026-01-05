@@ -18,6 +18,8 @@ pub mod mio;
 pub mod record;
 pub mod replay;
 pub mod tcp;
+#[cfg(all(target_os = "linux", feature = "timestamping"))]
+pub mod timestamping;
 #[cfg(any(feature = "rustls", feature = "openssl"))]
 pub mod tls;
 
@@ -201,6 +203,20 @@ impl Selectable for TcpStream {
 
 pub trait ConnectionInfoProvider {
     fn connection_info(&self) -> &ConnectionInfo;
+}
+
+/// RX timestamps captured from the underlying socket (when supported).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RxTimestamps {
+    pub sw_ns: u64,
+    pub hw_sys_ns: u64,
+    pub hw_raw_ns: u64,
+}
+
+/// Streams that can expose the last RX timestamps captured on read.
+pub trait RxTimestamped {
+    fn last_rx_timestamps(&self) -> Option<RxTimestamps>;
+    fn take_last_rx_timestamps(&mut self) -> Option<RxTimestamps>;
 }
 
 /// TCP stream connection info.
