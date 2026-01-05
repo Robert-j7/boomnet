@@ -35,8 +35,8 @@ fn main() -> anyhow::Result<()> {
         for frame in batch.iter() {
             if let WebsocketFrame::Text(_fin, body) = frame? {
                 let ready_ns = clock_realtime_ns();
-                let nic_to_kernel_ns = if rx.hw_sys_ns != 0 && read_ns != 0 {
-                    read_ns.saturating_sub(rx.hw_sys_ns)
+                let nic_to_kernel_ns = if rx.hw_raw_ns != 0 && read_ns != 0 {
+                    read_ns.saturating_sub(rx.hw_raw_ns)
                 } else {
                     0
                 };
@@ -46,9 +46,8 @@ fn main() -> anyhow::Result<()> {
                     0
                 };
                 println!(
-                    "hw_raw_ns={} hw_sys_ns={} nic_to_kernel_ns={} tls_to_userspace_ns={} msg={}",
+                    "hw_raw_ns={} nic_to_kernel_ns={} tls_to_userspace_ns={} msg={}",
                     rx.hw_raw_ns,
-                    rx.hw_sys_ns,
                     nic_to_kernel_ns,
                     tls_to_userspace_ns,
                     String::from_utf8_lossy(body)

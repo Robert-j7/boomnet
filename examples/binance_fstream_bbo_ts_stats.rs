@@ -46,8 +46,8 @@ fn main() -> anyhow::Result<()> {
         for frame in batch.iter() {
             if let WebsocketFrame::Text(_fin, _body) = frame? {
                 let ready_ns = clock_realtime_ns();
-                let nic_to_kernel_ns = if rx.hw_sys_ns != 0 && read_ns != 0 {
-                    read_ns.saturating_sub(rx.hw_sys_ns) as i64
+                let nic_to_kernel_ns = if rx.hw_raw_ns != 0 && read_ns != 0 {
+                    read_ns.saturating_sub(rx.hw_raw_ns) as i64
                 } else {
                     missing_hw += 1;
                     0
@@ -57,8 +57,8 @@ fn main() -> anyhow::Result<()> {
                 } else {
                     0
                 };
-                let nic_to_userspace_ns = if rx.hw_sys_ns != 0 && ready_ns != 0 {
-                    ready_ns.saturating_sub(rx.hw_sys_ns) as i64
+                let nic_to_userspace_ns = if rx.hw_raw_ns != 0 && ready_ns != 0 {
+                    ready_ns.saturating_sub(rx.hw_raw_ns) as i64
                 } else {
                     0
                 };

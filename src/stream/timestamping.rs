@@ -14,8 +14,6 @@ use std::ptr;
 
 // ---- linux/net_tstamp.h flags ----
 const SOF_TIMESTAMPING_RX_HARDWARE: libc::c_int = 1 << 2;
-// Optional: driver/kernel may provide HW time converted into system time domain.
-const SOF_TIMESTAMPING_SYS_HARDWARE: libc::c_int = 1 << 5;
 const SOF_TIMESTAMPING_RAW_HARDWARE: libc::c_int = 1 << 6;
 
 const SCM_TIMESTAMPING: libc::c_int = libc::SO_TIMESTAMPING;
@@ -103,8 +101,7 @@ unsafe fn cmsg_data(cmsg: *const libc::cmsghdr) -> *const u8 {
 /// Enable RX timestamping on an already-created socket.
 pub fn enable_rx_timestamping(fd: RawFd) -> io::Result<()> {
     let flags: libc::c_int = SOF_TIMESTAMPING_RX_HARDWARE
-        | SOF_TIMESTAMPING_RAW_HARDWARE
-        | SOF_TIMESTAMPING_SYS_HARDWARE;
+        | SOF_TIMESTAMPING_RAW_HARDWARE;
 
     let rc = unsafe {
         libc::setsockopt(
@@ -231,7 +228,6 @@ impl<S: AsRawFd> Read for TimestampingStream<S> {
                     if have >= hdr + need {
                         let tp = cmsg_data(c).cast::<ScmTimestamping>();
                         let t = *tp;
-                        out.hw_sys_ns = ns_from_timespec(t.ts[1]);
                         out.hw_raw_ns = ns_from_timespec(t.ts[2]);
                         self.last = Some(out);
                     }

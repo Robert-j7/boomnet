@@ -208,7 +208,6 @@ pub trait ConnectionInfoProvider {
 /// RX timestamps captured from the underlying socket (when supported).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RxTimestamps {
-    pub hw_sys_ns: u64,
     pub hw_raw_ns: u64,
 }
 
