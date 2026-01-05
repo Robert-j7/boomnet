@@ -29,17 +29,17 @@ fn main() -> anyhow::Result<()> {
     enable_rx_timestamping(stream.as_raw_fd())?;
     let stream = TimestampingStream::new(stream);
 
-    let mut ws = stream
-        .into_tls_stream()?
-        .into_websocket("/ws/ethusdt@bookTicker");
+    let mut ws = stream.into_tls_stream()?.into_websocket(
+        "/stream?streams=ethusdt@bookTicker/btcusdt@bookTicker/solusdt@bookTicker/ethusdc@bookTicker/btcusdc@bookTicker",
+    );
 
-    let mut nic_to_kernel = Vec::with_capacity(5000);
-    let mut tls_to_userspace = Vec::with_capacity(5000);
-    let mut nic_to_userspace = Vec::with_capacity(5000);
+    let mut nic_to_kernel = Vec::with_capacity(20000);
+    let mut tls_to_userspace = Vec::with_capacity(20000);
+    let mut nic_to_userspace = Vec::with_capacity(20000);
     let mut missing_hw = 0usize;
     let mut messages = 0usize;
 
-    while messages < 5000 {
+    while messages < 20000 {
         let batch = ws.read_batch_ts()?;
         let rx = batch.rx_timestamps().unwrap_or_default();
         let read_ns = clock_realtime_ns();
@@ -67,7 +67,7 @@ fn main() -> anyhow::Result<()> {
                 tls_to_userspace.push(tls_to_userspace_ns);
                 nic_to_userspace.push(nic_to_userspace_ns);
                 messages += 1;
-                if messages >= 5000 {
+                if messages >= 20000 {
                     break;
                 }
             }

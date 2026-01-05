@@ -24,9 +24,9 @@ fn main() -> anyhow::Result<()> {
     enable_rx_timestamping(stream.as_raw_fd())?;
     let stream = TimestampingStream::new(stream);
 
-    let mut ws = stream
-        .into_tls_stream()?
-        .into_websocket("/ws/ethusdt@bookTicker");
+    let mut ws = stream.into_tls_stream()?.into_websocket(
+        "/stream?streams=ethusdt@bookTicker/btcusdt@bookTicker/solusdt@bookTicker/ethusdc@bookTicker/btcusdc@bookTicker",
+    );
 
     loop {
         let batch = ws.read_batch_ts()?;
