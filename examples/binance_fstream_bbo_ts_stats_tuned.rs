@@ -15,12 +15,14 @@ fn main() -> anyhow::Result<()> {
 
     const CONN_COUNT: usize = 11;
     const TARGET_SAMPLES: usize = 200_000;
+    const RX_CPU: usize = 2;
+    const APP_CPU: usize = 3;
     const STREAM_PATH: &str =
         "/stream?streams=ethusdt@bookTicker/btcusdt@bookTicker/solusdt@bookTicker/ethusdc@bookTicker/btcusdc@bookTicker";
 
     let host = "fstream.binance.com";
     let iface = std::env::args().nth(1);
-    pin_to_core(3)?;
+    pin_to_core(APP_CPU)?;
 
     let epfd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
     if epfd < 0 {
@@ -30,7 +32,7 @@ fn main() -> anyhow::Result<()> {
     let mut conns: Vec<UnsafeCell<Conn>> = Vec::with_capacity(CONN_COUNT);
 
     for idx in 0..CONN_COUNT {
-        let stream = ConnectionInfo::new(host, 443).with_cpu(3).into_tcp_stream()?;
+        let stream = ConnectionInfo::new(host, 443).with_cpu(RX_CPU).into_tcp_stream()?;
         let fd = stream.as_raw_fd();
 
         if let Some(iface) = iface.as_deref() {
