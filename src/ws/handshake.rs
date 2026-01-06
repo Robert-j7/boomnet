@@ -15,7 +15,7 @@ use std::io::{Cursor, Read, Write};
 #[derive(Debug)]
 pub struct Handshaker {
     inbound_buffer: OwnedReadBuffer<1>,
-    outbound_buffer: Cursor<[u8; 256]>,
+    outbound_buffer: Cursor<Vec<u8>>,
     bytes_sent: usize,
     state: HandshakeState,
     server_name: String,
@@ -35,7 +35,7 @@ impl Handshaker {
     pub fn new(server_name: &str, endpoint: &str, pool: &mut BufferPoolRef) -> Self {
         Self {
             inbound_buffer: pool.acquire(),
-            outbound_buffer: Cursor::new([0; 256]),
+            outbound_buffer: Cursor::new(Vec::with_capacity(1024)),
             bytes_sent: 0,
             state: NotStarted,
             server_name: server_name.to_string(),
