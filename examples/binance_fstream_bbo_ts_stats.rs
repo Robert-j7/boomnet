@@ -9,71 +9,128 @@ fn main() -> anyhow::Result<()> {
     use boomnet::stream::timestamping::{configure_hwtstamp, enable_rx_timestamping, TimestampingStream};
     use boomnet::stream::tls::IntoTlsStream;
     use boomnet::ws::{IntoWebsocket, WebsocketFrame};
+    use std::cell::UnsafeCell;
     use std::os::fd::AsRawFd;
+    use std::io;
+
+    const CONN_COUNT: usize = 11;
+    const TARGET_SAMPLES: usize = 200_000;
+    const STREAM_PATH: &str =
+        "/stream?streams=ethusdt@bookTicker/btcusdt@bookTicker/solusdt@bookTicker/ethusdc@bookTicker/btcusdc@bookTicker";
 
     let host = "fstream.binance.com";
     let iface = std::env::args().nth(1);
     pin_to_core(3)?;
-    let stream = ConnectionInfo::new(host, 443).into_tcp_stream()?;
+    let epfd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
+    if epfd < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
 
-    if let Some(iface) = iface.as_deref() {
-        if let Err(err) = configure_hwtstamp(stream.as_raw_fd(), iface) {
-            eprintln!("warn: ioctl(SIOCSHWTSTAMP) failed for {iface}: {err}");
+    let mut conns: Vec<UnsafeCell<Conn>> = Vec::with_capacity(CONN_COUNT);
+
+    for idx in 0..CONN_COUNT {
+        let stream = ConnectionInfo::new(host, 443).into_tcp_stream()?;
+        let fd = stream.as_raw_fd();
+
+        if let Some(iface) = iface.as_deref() {
+            if let Err(err) = configure_hwtstamp(fd, iface) {
+                eprintln!("warn: ioctl(SIOCSHWTSTAMP) failed for {iface}: {err}");
+            }
         }
+
+        if let Err(err) = set_so_busy_poll(fd, 50) {
+            eprintln!("warn: setsockopt(SO_BUSY_POLL) failed: {err}");
+        }
+
+        enable_rx_timestamping(fd)?;
+        let stream = TimestampingStream::new(stream);
+        let ws = stream.into_tls_stream()?.into_websocket(STREAM_PATH);
+
+        let mut ev = libc::epoll_event {
+            events: (libc::EPOLLIN | libc::EPOLLOUT) as u32,
+            u64: idx as u64,
+        };
+        let rc = unsafe { libc::epoll_ctl(epfd, libc::EPOLL_CTL_ADD, fd, &mut ev) };
+        if rc < 0 {
+            unsafe { libc::close(epfd) };
+            return Err(io::Error::last_os_error().into());
+        }
+
+        conns.push(UnsafeCell::new(Conn { ws }));
     }
 
-    if let Err(err) = set_so_busy_poll(stream.as_raw_fd(), 50) {
-        eprintln!("warn: setsockopt(SO_BUSY_POLL) failed: {err}");
-    }
-
-    enable_rx_timestamping(stream.as_raw_fd())?;
-    let stream = TimestampingStream::new(stream);
-
-    let mut ws = stream.into_tls_stream()?.into_websocket(
-        "/stream?streams=ethusdt@bookTicker/btcusdt@bookTicker/solusdt@bookTicker/ethusdc@bookTicker/btcusdc@bookTicker",
-    );
-
-    let mut nic_to_kernel = Vec::with_capacity(20000);
-    let mut tls_to_userspace = Vec::with_capacity(20000);
-    let mut nic_to_userspace = Vec::with_capacity(20000);
+    let mut events = vec![libc::epoll_event { events: 0, u64: 0 }; 128];
+    let mut nic_to_kernel = Vec::with_capacity(TARGET_SAMPLES);
+    let mut tls_to_userspace = Vec::with_capacity(TARGET_SAMPLES);
+    let mut nic_to_userspace = Vec::with_capacity(TARGET_SAMPLES);
     let mut missing_hw = 0usize;
     let mut messages = 0usize;
 
-    while messages < 20000 {
-        let batch = ws.read_batch_ts()?;
-        let rx = batch.rx_timestamps().unwrap_or_default();
-        let read_ns = clock_realtime_ns();
-        for frame in batch.iter() {
-            if let WebsocketFrame::Text(_fin, _body) = frame? {
-                let ready_ns = clock_realtime_ns();
-                let nic_to_kernel_ns = if rx.hw_raw_ns != 0 && read_ns != 0 {
-                    read_ns.saturating_sub(rx.hw_raw_ns) as i64
-                } else {
-                    missing_hw += 1;
-                    0
-                };
-                let tls_to_userspace_ns = if ready_ns != 0 && read_ns != 0 {
-                    ready_ns.saturating_sub(read_ns) as i64
-                } else {
-                    0
-                };
-                let nic_to_userspace_ns = if rx.hw_raw_ns != 0 && ready_ns != 0 {
-                    ready_ns.saturating_sub(rx.hw_raw_ns) as i64
-                } else {
-                    0
-                };
+    while messages < TARGET_SAMPLES {
+        let n = unsafe { libc::epoll_wait(epfd, events.as_mut_ptr(), events.len() as i32, 0) };
+        if n < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            unsafe { libc::close(epfd) };
+            return Err(err.into());
+        }
+        if n == 0 {
+            std::hint::spin_loop();
+            continue;
+        }
 
-                nic_to_kernel.push(nic_to_kernel_ns);
-                tls_to_userspace.push(tls_to_userspace_ns);
-                nic_to_userspace.push(nic_to_userspace_ns);
-                messages += 1;
-                if messages >= 20000 {
-                    break;
+        for ev in events.iter().take(n as usize) {
+            if (ev.events & (libc::EPOLLIN | libc::EPOLLOUT) as u32) == 0 {
+                continue;
+            }
+            let idx = ev.u64 as usize;
+            if idx >= conns.len() {
+                continue;
+            }
+            // SAFETY: each token maps to a unique connection, and we only access one at a time.
+            let conn = unsafe { &mut *conns[idx].get() };
+
+            let batch = conn.ws.read_batch_ts()?;
+            let rx = batch.rx_timestamps().unwrap_or_default();
+            let read_ns = clock_realtime_ns();
+            for frame in batch.iter() {
+                if let WebsocketFrame::Text(_fin, _body) = frame? {
+                    let ready_ns = clock_realtime_ns();
+                    let nic_to_kernel_ns = if rx.hw_raw_ns != 0 && read_ns != 0 {
+                        read_ns.saturating_sub(rx.hw_raw_ns) as i64
+                    } else {
+                        missing_hw += 1;
+                        0
+                    };
+                    let tls_to_userspace_ns = if ready_ns != 0 && read_ns != 0 {
+                        ready_ns.saturating_sub(read_ns) as i64
+                    } else {
+                        0
+                    };
+                    let nic_to_userspace_ns = if rx.hw_raw_ns != 0 && ready_ns != 0 {
+                        ready_ns.saturating_sub(rx.hw_raw_ns) as i64
+                    } else {
+                        0
+                    };
+
+                    nic_to_kernel.push(nic_to_kernel_ns);
+                    tls_to_userspace.push(tls_to_userspace_ns);
+                    nic_to_userspace.push(nic_to_userspace_ns);
+                    messages += 1;
+                    if messages >= TARGET_SAMPLES {
+                        break;
+                    }
                 }
+            }
+            if messages >= TARGET_SAMPLES {
+                break;
             }
         }
     }
 
+    unsafe { libc::close(epfd) };
     print_stats("nic_to_kernel_ns", &nic_to_kernel);
     print_stats("tls_to_userspace_ns", &tls_to_userspace);
     print_stats("nic_to_userspace_ns", &nic_to_userspace);
@@ -89,6 +146,26 @@ fn main() -> anyhow::Result<()> {
 )))]
 fn main() {
     eprintln!("This example requires Linux and features: ws, timestamping, and rustls-* or openssl.");
+}
+
+#[cfg(all(
+    target_os = "linux",
+    feature = "timestamping",
+    feature = "ws",
+    any(feature = "rustls", feature = "openssl")
+))]
+type WsStream = boomnet::stream::tls::TlsStream<
+    boomnet::stream::timestamping::TimestampingStream<boomnet::stream::tcp::TcpStream>,
+>;
+
+#[cfg(all(
+    target_os = "linux",
+    feature = "timestamping",
+    feature = "ws",
+    any(feature = "rustls", feature = "openssl")
+))]
+struct Conn {
+    ws: boomnet::ws::Websocket<WsStream>,
 }
 
 #[cfg(all(
