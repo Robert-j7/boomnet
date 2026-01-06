@@ -17,12 +17,20 @@ fn main() -> anyhow::Result<()> {
     const TARGET_SAMPLES: usize = 200_000;
     const RX_CPU: usize = 2;
     const APP_CPU: usize = 3;
+    const BUSY_POLL_US: libc::c_int = 50;
+    const BUSY_POLL_BUDGET: libc::c_int = 64;
     const STREAM_PATH: &str =
         "/stream?streams=ethusdt@bookTicker/btcusdt@bookTicker/solusdt@bookTicker/ethusdc@bookTicker/btcusdc@bookTicker";
 
     let host = "fstream.binance.com";
     let iface = std::env::args().nth(1);
     pin_to_core(APP_CPU)?;
+    if let Err(err) = try_mlockall() {
+        eprintln!("warn: mlockall failed: {err}");
+    }
+    if let Err(err) = try_sched_fifo(80) {
+        eprintln!("warn: sched_fifo failed: {err}");
+    }
 
     let epfd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
     if epfd < 0 {
@@ -41,8 +49,11 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
-        if let Err(err) = set_so_busy_poll(fd, 50) {
+        if let Err(err) = set_so_busy_poll(fd, BUSY_POLL_US) {
             eprintln!("warn: setsockopt(SO_BUSY_POLL) failed: {err}");
+        }
+        if let Err(err) = set_so_busy_poll_budget(fd, BUSY_POLL_BUDGET) {
+            eprintln!("warn: setsockopt(SO_BUSY_POLL_BUDGET) failed: {err}");
         }
         if let Err(err) = set_so_prefer_busy_poll(fd, true) {
             eprintln!("warn: setsockopt(SO_PREFER_BUSY_POLL) failed: {err}");
@@ -276,6 +287,60 @@ fn set_so_rcvlowat(fd: std::os::fd::RawFd, val: libc::c_int) -> std::io::Result<
         )
     };
     if rc < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(all(
+    target_os = "linux",
+    feature = "timestamping",
+    feature = "ws",
+    any(feature = "rustls", feature = "openssl")
+))]
+fn set_so_busy_poll_budget(fd: std::os::fd::RawFd, budget: libc::c_int) -> std::io::Result<()> {
+    let rc = unsafe {
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_BUSY_POLL_BUDGET,
+            (&budget as *const libc::c_int).cast(),
+            std::mem::size_of_val(&budget) as libc::socklen_t,
+        )
+    };
+    if rc < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(all(
+    target_os = "linux",
+    feature = "timestamping",
+    feature = "ws",
+    any(feature = "rustls", feature = "openssl")
+))]
+fn try_mlockall() -> std::io::Result<()> {
+    let rc = unsafe { libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE) };
+    if rc != 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(all(
+    target_os = "linux",
+    feature = "timestamping",
+    feature = "ws",
+    any(feature = "rustls", feature = "openssl")
+))]
+fn try_sched_fifo(priority: i32) -> std::io::Result<()> {
+    let param = libc::sched_param { sched_priority: priority };
+    let rc = unsafe { libc::sched_setscheduler(0, libc::SCHED_FIFO, &param) };
+    if rc != 0 {
         Err(std::io::Error::last_os_error())
     } else {
         Ok(())
